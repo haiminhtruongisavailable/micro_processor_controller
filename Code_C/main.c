@@ -1,0 +1,264 @@
+#include <16F887.h>
+
+#fuses HS,NOWDT,NOPROTECT,NOLVP
+#use delay(clock=20000000)
+
+#use fast_io(B)
+#use fast_io(C)
+#use fast_io(D)
+
+#byte ANSEL  = 0x188
+#byte ANSELH = 0x189
+
+#define PASS_LEN     4
+#define MAX_WRONG    3
+
+const char PASSWORD[] = "1234";
+
+#define GREEN_ON     output_high(PIN_B1)
+#define GREEN_OFF    output_low(PIN_B1)
+#define RED_ON       output_high(PIN_B2)
+#define RED_OFF      output_low(PIN_B2)
+#define BUZZER_ON    output_high(PIN_C1) 
+#define BUZZER_OFF   output_low(PIN_C1)
+#define SERVO_HIGH   output_high(PIN_C2) 
+#define SERVO_LOW    output_low(PIN_C2)
+
+#define TRIG_PIN     PIN_C3
+#define ECHO_PIN     PIN_C4
+
+volatile int8 idx = 0;
+volatile char entered[6]; 
+volatile int8 wrong_attempts = 0;
+int1 door_is_open = FALSE; 
+
+void servo_pulse_open() {
+   SERVO_HIGH; delay_us(2050); SERVO_LOW; delay_ms(18);
+}
+
+void servo_pulse_closed() {
+   SERVO_HIGH; delay_us(950); SERVO_LOW; delay_ms(19);
+}
+
+void success_beep() {
+   BUZZER_ON; delay_ms(40); BUZZER_OFF; delay_ms(40);
+   BUZZER_ON; delay_ms(40); BUZZER_OFF;
+}
+
+void error_beep() {
+   BUZZER_ON; delay_ms(400); BUZZER_OFF; delay_ms(200);
+   BUZZER_ON; delay_ms(400); BUZZER_OFF;
+}
+
+void ready_beep() {
+   BUZZER_ON; delay_ms(30); BUZZER_OFF; delay_ms(50);
+   BUZZER_ON; delay_ms(30); BUZZER_OFF;
+}
+
+// ==========================================
+// NEW: ULTRASONIC SENSOR FUNCTION
+// ==========================================
+int16 get_distance_cm() {
+   int16 timer_ticks;
+   
+   // 1. Send a 10 microsecond pulse to the TRIG pin
+   output_high(TRIG_PIN);
+   delay_us(10);
+   output_low(TRIG_PIN);
+   
+   // 2. Wait for the ECHO pin to go HIGH (Sound wave emitted)
+   set_timer1(0);
+   while(!input(ECHO_PIN) && get_timer1() < 60000); 
+   
+   // 3. Start timing how long the ECHO pin stays HIGH (Waiting for echo)
+   set_timer1(0);
+   while(input(ECHO_PIN) && get_timer1() < 60000); 
+   timer_ticks = get_timer1(); // Read the stopwatch
+   
+   // 4. Calculate Distance
+   // Speed of sound = 340 m/s. Formula adjusted for Timer1 speed.
+   int16 distance = timer_ticks / 73; 
+   
+   return distance;
+}
+
+// Checks if someone is standing within 50 centimeters of the safe
+int1 is_person_present() {
+   int16 dist = get_distance_cm();
+   
+   if (dist > 0 && dist < 50) { 
+      return TRUE;  // Someone is close!
+   } else {
+      return FALSE; // Safe area is clear!
+   }
+}
+
+char scan_matrix() {
+   char k = 0;
+   output_high(PIN_D0); delay_us(20);
+   if(input(PIN_D4)) k = '7'; else if(input(PIN_D5)) k = '8'; else if(input(PIN_D6)) k = '9'; else if(input(PIN_D7)) k = '/';
+   output_low(PIN_D0);
+   if (k) return k;
+
+   output_high(PIN_D1); delay_us(20);
+   if(input(PIN_D4)) k = '4'; else if(input(PIN_D5)) k = '5'; else if(input(PIN_D6)) k = '6'; else if(input(PIN_D7)) k = '*';
+   output_low(PIN_D1);
+   if (k) return k;
+
+   output_high(PIN_D2); delay_us(20);
+   if(input(PIN_D4)) k = '1'; else if(input(PIN_D5)) k = '2'; else if(input(PIN_D6)) k = '3'; else if(input(PIN_D7)) k = '-';
+   output_low(PIN_D2);
+   if (k) return k;
+
+   output_high(PIN_D3); delay_us(20);
+   if(input(PIN_D4)) k = '%'; else if(input(PIN_D5)) k = '0'; else if(input(PIN_D6)) k = '='; else if(input(PIN_D7)) k = '+';
+   output_low(PIN_D3);
+   return k;
+}
+
+int16 idle_timer = 0; 
+
+char wait_for_key() {
+   char k;
+   int16 beep_timer = 0;
+   idle_timer = 0; 
+   
+   while(scan_matrix() != 0) { delay_ms(10); }
+
+   while((k = scan_matrix()) == 0) { 
+      delay_ms(10); 
+      
+      if (door_is_open) {
+         idle_timer++; 
+         
+         // Only check the ultrasonic sensor every ~100ms so we don't overwhelm it
+         if (idle_timer % 10 == 0) {
+            if (is_person_present() == FALSE) {
+               return 0; // Trigger auto-lock!
+            }
+         }
+         
+         if (idle_timer >= 1500) return 0; // 15 Second Security Timeout
+
+         beep_timer++;
+         if (beep_timer >= 300) {
+            BUZZER_ON; delay_ms(10); BUZZER_OFF; 
+            beep_timer = 0;
+         }
+      }
+   }
+
+   BUZZER_ON; delay_ms(50); BUZZER_OFF;
+   while(scan_matrix() != 0) { delay_ms(10); }
+
+   return k;
+}
+
+void clear_data() {
+   idx = 0;
+   for(int i=0; i<6; i++) {
+      entered[i] = 0;
+   }
+}
+
+#int_ext
+void ext_isr(void) {
+   wrong_attempts = 0;
+   clear_data();
+   GREEN_ON; delay_ms(300); GREEN_OFF;
+}
+
+void main() {
+   ANSEL  = 0x00; 
+   ANSELH = 0x00;
+
+   set_tris_b(0x01); 
+   set_tris_c(0x10); // RC4 (Echo) is Input (1), everything else is Output (0)
+   set_tris_d(0xF0); 
+
+   output_b(0x00);
+   output_c(0x00);
+   output_d(0x00); 
+   
+   // Setup Timer1 to time the ultrasonic pulse
+   setup_timer_1(T1_INTERNAL | T1_DIV_BY_4);
+
+   clear_data();
+   wrong_attempts = 0;
+   door_is_open = FALSE;
+
+   enable_interrupts(INT_EXT);
+   ext_int_edge(L_TO_H);
+   enable_interrupts(GLOBAL);
+
+   for(int j=0; j<10; j++) servo_pulse_closed();
+   ready_beep(); 
+
+   while (TRUE) {
+      char key = wait_for_key(); 
+
+      if (door_is_open) {
+         if (key == '*') {
+            GREEN_OFF;
+            for (int16 i = 0; i < 10; i++) servo_pulse_closed(); 
+            door_is_open = FALSE;
+            success_beep();
+            ready_beep(); 
+         } 
+         else if (key == 0) {
+            if (is_person_present() == FALSE) delay_ms(1000); 
+
+            if (is_person_present() == FALSE || idle_timer >= 1500) {
+               GREEN_OFF;
+               BUZZER_ON; delay_ms(200); BUZZER_OFF; delay_ms(100); 
+               
+               for (int16 i = 0; i < 10; i++) servo_pulse_closed(); 
+               door_is_open = FALSE;
+               success_beep();
+               ready_beep();
+            }
+         }
+         else if (key != 0) {
+            error_beep(); 
+         }
+         continue; 
+      }
+
+      if (key == '%') { 
+         clear_data(); 
+      }
+      else if (key == '=') { 
+         int8 match = 1;
+         if (idx == PASS_LEN) {
+            for (int8 i = 0; i < PASS_LEN; i++) {
+               if (entered[i] != PASSWORD[i]) match = 0;
+            }
+         } else match = 0; 
+         
+         if (match) {
+            wrong_attempts = 0;
+            GREEN_ON;
+            success_beep();
+            for (int16 i = 0; i < 10; i++) servo_pulse_open(); 
+            door_is_open = TRUE; 
+         } else {
+            wrong_attempts++;
+            RED_ON; error_beep(); delay_ms(1000); RED_OFF;
+            if (wrong_attempts >= MAX_WRONG) {
+               // Police siren
+               for(int i = 0; i < 15; i++) { 
+                  RED_ON; for(int j=0; j<20; j++) { BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(10); } 
+                  RED_OFF; for(int j=0; j<15; j++) { BUZZER_ON; delay_ms(20); BUZZER_OFF; delay_ms(20); } 
+               }
+               wrong_attempts = 0; 
+               ready_beep();
+            }
+         }
+         clear_data(); 
+      }
+      else if (key >= '0' && key <= '9') {
+         if (idx < PASS_LEN) entered[idx] = key;
+         idx++; 
+      }
+   }
+}
