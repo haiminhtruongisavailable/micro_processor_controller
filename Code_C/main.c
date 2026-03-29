@@ -24,20 +24,34 @@ const char PASSWORD[] = "1234";
 #define SERVO_HIGH   output_high(PIN_C2) 
 #define SERVO_LOW    output_low(PIN_C2)
 
-#define TRIG_PIN     PIN_C3
-#define ECHO_PIN     PIN_C4
+// ==========================================
+// FSM: SYSTEM STATES
+// ==========================================
+typedef enum {
+    STATE_IDLE,
+    STATE_TYPING,
+    STATE_UNLOCKED,
+    STATE_ALARM
+} SystemState;
+
+SystemState current_state = STATE_IDLE;
 
 volatile int8 idx = 0;
 volatile char entered[6]; 
 volatile int8 wrong_attempts = 0;
-int1 door_is_open = FALSE; 
 
+int16 inactivity_timer = 0; 
+char last_key = 0;          
+
+// ==========================================
+// HARDWARE & AUDIO FUNCTIONS
+// ==========================================
 void servo_pulse_open() {
    SERVO_HIGH; delay_us(2050); SERVO_LOW; delay_ms(18);
 }
 
 void servo_pulse_closed() {
-   SERVO_HIGH; delay_us(950); SERVO_LOW; delay_ms(19);
+   SERVO_HIGH; delay_us(1496); delay_cycles(11); SERVO_LOW; delay_ms(18);
 }
 
 void success_beep() {
@@ -55,44 +69,22 @@ void ready_beep() {
    BUZZER_ON; delay_ms(30); BUZZER_OFF;
 }
 
-// ==========================================
-// NEW: ULTRASONIC SENSOR FUNCTION
-// ==========================================
-int16 get_distance_cm() {
-   int16 timer_ticks;
-   
-   // 1. Send a 10 microsecond pulse to the TRIG pin
-   output_high(TRIG_PIN);
-   delay_us(10);
-   output_low(TRIG_PIN);
-   
-   // 2. Wait for the ECHO pin to go HIGH (Sound wave emitted)
-   set_timer1(0);
-   while(!input(ECHO_PIN) && get_timer1() < 60000); 
-   
-   // 3. Start timing how long the ECHO pin stays HIGH (Waiting for echo)
-   set_timer1(0);
-   while(input(ECHO_PIN) && get_timer1() < 60000); 
-   timer_ticks = get_timer1(); // Read the stopwatch
-   
-   // 4. Calculate Distance
-   // Speed of sound = 340 m/s. Formula adjusted for Timer1 speed.
-   int16 distance = timer_ticks / 73; 
-   
-   return distance;
+void play_key_tick() {
+   BUZZER_ON; delay_ms(5); BUZZER_OFF; 
 }
 
-// Checks if someone is standing within 50 centimeters of the safe
-int1 is_person_present() {
-   int16 dist = get_distance_cm();
-   
-   if (dist > 0 && dist < 50) { 
-      return TRUE;  // Someone is close!
-   } else {
-      return FALSE; // Safe area is clear!
-   }
+void play_delete_tick() {
+   BUZZER_ON; delay_ms(15); BUZZER_OFF; 
 }
 
+void play_reminder_chirp() {
+   BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(20);
+   BUZZER_ON; delay_ms(10); BUZZER_OFF;
+}
+
+// ==========================================
+// KEYPAD SCANNER (Non-Blocking)
+// ==========================================
 char scan_matrix() {
    char k = 0;
    output_high(PIN_D0); delay_us(20);
@@ -116,149 +108,199 @@ char scan_matrix() {
    return k;
 }
 
-int16 idle_timer = 0; 
-
-char wait_for_key() {
-   char k;
-   int16 beep_timer = 0;
-   idle_timer = 0; 
-   
-   while(scan_matrix() != 0) { delay_ms(10); }
-
-   while((k = scan_matrix()) == 0) { 
-      delay_ms(10); 
-      
-      if (door_is_open) {
-         idle_timer++; 
-         
-         // Only check the ultrasonic sensor every ~100ms so we don't overwhelm it
-         if (idle_timer % 10 == 0) {
-            if (is_person_present() == FALSE) {
-               return 0; // Trigger auto-lock!
-            }
-         }
-         
-         if (idle_timer >= 1500) return 0; // 15 Second Security Timeout
-
-         beep_timer++;
-         if (beep_timer >= 300) {
-            BUZZER_ON; delay_ms(10); BUZZER_OFF; 
-            beep_timer = 0;
-         }
-      }
-   }
-
-   BUZZER_ON; delay_ms(50); BUZZER_OFF;
-   while(scan_matrix() != 0) { delay_ms(10); }
-
-   return k;
-}
-
+// ==========================================
+// STATE TRANSITION HELPERS (Moore Actions)
+// ==========================================
 void clear_data() {
    idx = 0;
-   for(int i=0; i<6; i++) {
-      entered[i] = 0;
-   }
+   for(int i=0; i<6; i++) entered[i] = 0;
 }
 
+void go_to_idle() {
+   current_state = STATE_IDLE;
+   clear_data();
+   GREEN_OFF;
+   for(int j=0; j<10; j++) servo_pulse_closed(); 
+}
+
+void go_to_unlocked() {
+   current_state = STATE_UNLOCKED;
+   wrong_attempts = 0;
+   inactivity_timer = 0; // Reset timer for the 15-second open window
+   GREEN_ON;
+   success_beep();
+   for(int j=0; j<10; j++) servo_pulse_open();
+}
+
+// ==========================================
+// EMERGENCY RESET INTERRUPT
+// ==========================================
 #int_ext
 void ext_isr(void) {
    wrong_attempts = 0;
-   clear_data();
+   go_to_idle();
    GREEN_ON; delay_ms(300); GREEN_OFF;
+   ready_beep();
 }
 
+// ==========================================
+// MAIN LOOP
+// ==========================================
 void main() {
    ANSEL  = 0x00; 
    ANSELH = 0x00;
 
    set_tris_b(0x01); 
-   set_tris_c(0x10); // RC4 (Echo) is Input (1), everything else is Output (0)
+   set_tris_c(0x00); 
    set_tris_d(0xF0); 
 
    output_b(0x00);
    output_c(0x00);
    output_d(0x00); 
-   
-   // Setup Timer1 to time the ultrasonic pulse
-   setup_timer_1(T1_INTERNAL | T1_DIV_BY_4);
-
-   clear_data();
-   wrong_attempts = 0;
-   door_is_open = FALSE;
 
    enable_interrupts(INT_EXT);
    ext_int_edge(L_TO_H);
    enable_interrupts(GLOBAL);
 
-   for(int j=0; j<10; j++) servo_pulse_closed();
+   // Boot Sequence
+   go_to_idle();
    ready_beep(); 
 
    while (TRUE) {
-      char key = wait_for_key(); 
-
-      if (door_is_open) {
-         if (key == '*') {
-            GREEN_OFF;
-            for (int16 i = 0; i < 10; i++) servo_pulse_closed(); 
-            door_is_open = FALSE;
-            success_beep();
-            ready_beep(); 
-         } 
-         else if (key == 0) {
-            if (is_person_present() == FALSE) delay_ms(1000); 
-
-            if (is_person_present() == FALSE || idle_timer >= 1500) {
-               GREEN_OFF;
-               BUZZER_ON; delay_ms(200); BUZZER_OFF; delay_ms(100); 
-               
-               for (int16 i = 0; i < 10; i++) servo_pulse_closed(); 
-               door_is_open = FALSE;
-               success_beep();
-               ready_beep();
-            }
-         }
-         else if (key != 0) {
-            error_beep(); 
-         }
-         continue; 
+      // 1. Read Keypad (Edge Detection)
+      char key = scan_matrix();
+      int1 key_pressed = FALSE;
+      
+      if (key != 0 && last_key == 0) {
+         key_pressed = TRUE; 
       }
+      last_key = key;
 
-      if (key == '%') { 
-         clear_data(); 
-      }
-      else if (key == '=') { 
-         int8 match = 1;
-         if (idx == PASS_LEN) {
-            for (int8 i = 0; i < PASS_LEN; i++) {
-               if (entered[i] != PASSWORD[i]) match = 0;
-            }
-         } else match = 0; 
+      // 2. FSM Switch Statement
+      switch (current_state) {
          
-         if (match) {
-            wrong_attempts = 0;
-            GREEN_ON;
-            success_beep();
-            for (int16 i = 0; i < 10; i++) servo_pulse_open(); 
-            door_is_open = TRUE; 
-         } else {
-            wrong_attempts++;
-            RED_ON; error_beep(); delay_ms(1000); RED_OFF;
-            if (wrong_attempts >= MAX_WRONG) {
-               // Police siren
-               for(int i = 0; i < 15; i++) { 
-                  RED_ON; for(int j=0; j<20; j++) { BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(10); } 
-                  RED_OFF; for(int j=0; j<15; j++) { BUZZER_ON; delay_ms(20); BUZZER_OFF; delay_ms(20); } 
+         // ------------------------------------
+         // STATE 1: IDLE (Asleep, waiting for first key)
+         // ------------------------------------
+         case STATE_IDLE:
+            if (key_pressed) {
+               if (key >= '0' && key <= '9') {
+                  current_state = STATE_TYPING;
+                  inactivity_timer = 0;   // Start the 5-second typing clock
+                  entered[idx++] = key;   // Save first digit
+                  play_key_tick();
                }
-               wrong_attempts = 0; 
-               ready_beep();
             }
-         }
-         clear_data(); 
+            break;
+
+         // ------------------------------------
+         // STATE 2: TYPING (Active input)
+         // ------------------------------------
+         case STATE_TYPING:
+            inactivity_timer += 10; 
+            if (inactivity_timer >= 5000) {  // 5 seconds passed!
+               error_beep();
+               go_to_idle();
+               break;
+            }
+            
+            if (key_pressed) {
+               inactivity_timer = 0; // Reset timer on any key press
+
+               if (key >= '0' && key <= '9') {
+                  if (idx < PASS_LEN) {
+                     entered[idx++] = key;
+                     play_key_tick();
+                  } else {
+                     RED_ON;
+                     error_beep(); 
+                     RED_OFF;
+                  }
+               }
+               else if (key == '-') { // BACKSPACE
+                  if (idx > 0) {
+                     idx--;
+                     entered[idx] = 0;
+                     play_delete_tick();
+                     if (idx == 0) go_to_idle(); 
+                  } else {
+                     go_to_idle();
+                  }
+               }
+               else if (key == '%') { // ABORT / CANCEL
+                  error_beep();
+                  go_to_idle();
+               }
+               else if (key == '=') { // SUBMIT PASSWORD
+                  int8 match = 1;
+                  if (idx == PASS_LEN) {
+                     for (int8 i = 0; i < PASS_LEN; i++) {
+                        if (entered[i] != PASSWORD[i]) match = 0;
+                     }
+                  } else match = 0; 
+                  
+                  if (match) {
+                     go_to_unlocked();
+                  } else {
+                     wrong_attempts++;
+                     RED_ON; error_beep(); delay_ms(1000); RED_OFF;
+                     
+                     if (wrong_attempts >= MAX_WRONG) {
+                        current_state = STATE_ALARM;
+                     } else {
+                        go_to_idle();
+                     }
+                  }
+               }
+            }
+            break;
+
+         // ------------------------------------
+         // STATE 3: UNLOCKED (Safe is Open)
+         // ------------------------------------
+         case STATE_UNLOCKED:
+            inactivity_timer += 10; 
+            
+            if (inactivity_timer == 12000) { // Warning chirp at 12 seconds
+               play_reminder_chirp();
+            }
+            
+            if (inactivity_timer >= 15000) { // Auto-Lock at 15 seconds
+               go_to_idle();
+               ready_beep();
+               break; 
+            }
+            
+            if (key_pressed) {
+               if (key == '*') {
+                  inactivity_timer = 0; // EXTEND TIME
+                  success_beep(); 
+               } 
+               else if (key == '%') {
+                  go_to_idle();         // MANUAL CLOSE
+                  ready_beep();
+               }
+               else {
+                  error_beep();         // Invalid input
+               }
+            }
+            break;
+
+         // ------------------------------------
+         // STATE 4: ALARM (Lockdown)
+         // ------------------------------------
+         case STATE_ALARM:
+            for(int i = 0; i < 15; i++) { 
+               RED_ON; for(int j=0; j<20; j++) { BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(10); } 
+               RED_OFF; for(int j=0; j<15; j++) { BUZZER_ON; delay_ms(20); BUZZER_OFF; delay_ms(20); } 
+            }
+            wrong_attempts = 0; 
+            ready_beep();
+            go_to_idle(); 
+            break;
+            
       }
-      else if (key >= '0' && key <= '9') {
-         if (idx < PASS_LEN) entered[idx] = key;
-         idx++; 
-      }
+      
+      delay_ms(10); // 10ms Heartbeat
    }
 }
