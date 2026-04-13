@@ -25,7 +25,7 @@ const char PASSWORD[] = "1234";
 #define SERVO_LOW    output_low(PIN_C2)
 
 // ==========================================
-// FSM: SYSTEM STATES
+// SYSTEM STATES
 // ==========================================
 typedef enum {
     STATE_IDLE,
@@ -39,98 +39,154 @@ SystemState current_state = STATE_IDLE;
 volatile int8 idx = 0;
 volatile char entered[6]; 
 volatile int8 wrong_attempts = 0;
-
 int16 inactivity_timer = 0; 
 char last_key = 0;          
 
 // ==========================================
 // HARDWARE & AUDIO FUNCTIONS
 // ==========================================
-void servo_pulse_open() {
-   SERVO_HIGH; delay_us(2050); SERVO_LOW; delay_ms(18);
-}
+void servo_pulse_open()   { SERVO_HIGH; delay_us(2050); SERVO_LOW; delay_ms(18); }
+void servo_pulse_closed() { SERVO_HIGH; delay_us(1496); delay_cycles(11); SERVO_LOW; delay_ms(18); }
+void success_beep()       { BUZZER_ON; delay_ms(40); BUZZER_OFF; delay_ms(40); BUZZER_ON; delay_ms(40); BUZZER_OFF; }
+void error_beep()         { BUZZER_ON; delay_ms(400); BUZZER_OFF; delay_ms(200); BUZZER_ON; delay_ms(400); BUZZER_OFF; }
+void ready_beep()         { BUZZER_ON; delay_ms(30); BUZZER_OFF; delay_ms(50); BUZZER_ON; delay_ms(30); BUZZER_OFF; }
+void play_key_tick()      { BUZZER_ON; delay_ms(5); BUZZER_OFF; }
+void play_delete_tick()   { BUZZER_ON; delay_ms(15); BUZZER_OFF; }
+void play_reminder_chirp(){ BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(20); BUZZER_ON; delay_ms(10); BUZZER_OFF; }
 
-void servo_pulse_closed() {
-   SERVO_HIGH; delay_us(1496); delay_cycles(11); SERVO_LOW; delay_ms(18);
-}
-
-void success_beep() {
-   BUZZER_ON; delay_ms(40); BUZZER_OFF; delay_ms(40);
-   BUZZER_ON; delay_ms(40); BUZZER_OFF;
-}
-
-void error_beep() {
-   BUZZER_ON; delay_ms(400); BUZZER_OFF; delay_ms(200);
-   BUZZER_ON; delay_ms(400); BUZZER_OFF;
-}
-
-void ready_beep() {
-   BUZZER_ON; delay_ms(30); BUZZER_OFF; delay_ms(50);
-   BUZZER_ON; delay_ms(30); BUZZER_OFF;
-}
-
-void play_key_tick() {
-   BUZZER_ON; delay_ms(5); BUZZER_OFF; 
-}
-
-void play_delete_tick() {
-   BUZZER_ON; delay_ms(15); BUZZER_OFF; 
-}
-
-void play_reminder_chirp() {
-   BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(20);
-   BUZZER_ON; delay_ms(10); BUZZER_OFF;
-}
-
-// ==========================================
-// KEYPAD SCANNER (Non-Blocking)
-// ==========================================
 char scan_matrix() {
    char k = 0;
    output_high(PIN_D0); delay_us(20);
    if(input(PIN_D4)) k = '7'; else if(input(PIN_D5)) k = '8'; else if(input(PIN_D6)) k = '9'; else if(input(PIN_D7)) k = '/';
-   output_low(PIN_D0);
-   if (k) return k;
+   output_low(PIN_D0); if (k) return k;
 
    output_high(PIN_D1); delay_us(20);
    if(input(PIN_D4)) k = '4'; else if(input(PIN_D5)) k = '5'; else if(input(PIN_D6)) k = '6'; else if(input(PIN_D7)) k = '*';
-   output_low(PIN_D1);
-   if (k) return k;
+   output_low(PIN_D1); if (k) return k;
 
    output_high(PIN_D2); delay_us(20);
    if(input(PIN_D4)) k = '1'; else if(input(PIN_D5)) k = '2'; else if(input(PIN_D6)) k = '3'; else if(input(PIN_D7)) k = '-';
-   output_low(PIN_D2);
-   if (k) return k;
+   output_low(PIN_D2); if (k) return k;
 
    output_high(PIN_D3); delay_us(20);
    if(input(PIN_D4)) k = '%'; else if(input(PIN_D5)) k = '0'; else if(input(PIN_D6)) k = '='; else if(input(PIN_D7)) k = '+';
-   output_low(PIN_D3);
-   return k;
+   output_low(PIN_D3); return k;
 }
+
 
 // ==========================================
-// STATE TRANSITION HELPERS (Moore Actions)
+// 1. PROCESSING UNIT (The Brains of each State)
+// These functions evaluate logic and return the NEXT state.
 // ==========================================
-void clear_data() {
-   idx = 0;
-   for(int i=0; i<6; i++) entered[i] = 0;
+
+SystemState process_idle(char key, int1 key_pressed) {
+    if (key_pressed && (key >= '0' && key <= '9')) {
+        entered[idx++] = key;   // Save first digit
+        play_key_tick();
+        return STATE_TYPING;    // Request transition
+    }
+    return STATE_IDLE;          // Stay in IDLE
 }
 
-void go_to_idle() {
-   current_state = STATE_IDLE;
-   clear_data();
-   GREEN_OFF;
-   for(int j=0; j<10; j++) servo_pulse_closed(); 
+SystemState process_typing(char key, int1 key_pressed) {
+    inactivity_timer += 10; 
+    
+    if (inactivity_timer >= 5000) { 
+        error_beep();
+        return STATE_IDLE; 
+    }
+    
+    if (key_pressed) {
+        inactivity_timer = 0; 
+        
+        if (key >= '0' && key <= '9') {
+            if (idx < PASS_LEN) {
+                entered[idx++] = key;
+                play_key_tick();
+            } else {
+                RED_ON; error_beep(); RED_OFF;
+            }
+        } 
+        else if (key == '-') { 
+            if (idx > 0) {
+                idx--; entered[idx] = 0; play_delete_tick();
+                if (idx == 0) return STATE_IDLE; 
+            } else return STATE_IDLE;
+        } 
+        else if (key == '%') { 
+            error_beep();
+            return STATE_IDLE;
+        } 
+        else if (key == '=') { 
+            int8 match = 1;
+            if (idx == PASS_LEN) {
+                for (int8 i=0; i<PASS_LEN; i++) if (entered[i] != PASSWORD[i]) match = 0;
+            } else match = 0; 
+            
+            if (match) return STATE_UNLOCKED;
+            
+            wrong_attempts++;
+            RED_ON; error_beep(); delay_ms(1000); RED_OFF;
+            if (wrong_attempts >= MAX_WRONG) return STATE_ALARM;
+            else return STATE_IDLE;
+        }
+    }
+    return STATE_TYPING; 
 }
 
-void go_to_unlocked() {
-   current_state = STATE_UNLOCKED;
-   wrong_attempts = 0;
-   inactivity_timer = 0; // Reset timer for the 15-second open window
-   GREEN_ON;
-   success_beep();
-   for(int j=0; j<10; j++) servo_pulse_open();
+SystemState process_unlocked(char key, int1 key_pressed) {
+    inactivity_timer += 10; 
+    
+    if (inactivity_timer == 12000) play_reminder_chirp();
+    if (inactivity_timer >= 15000) { ready_beep(); return STATE_IDLE; }
+    
+    if (key_pressed) {
+        if (key == '*') { inactivity_timer = 0; success_beep(); } 
+        else if (key == '%') { ready_beep(); return STATE_IDLE; }
+        else { error_beep(); }
+    }
+    return STATE_UNLOCKED;
 }
+
+SystemState process_alarm() {
+    for(int i = 0; i < 15; i++) { 
+        RED_ON; for(int j=0; j<20; j++) { BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(10); } 
+        RED_OFF; for(int j=0; j<15; j++) { BUZZER_ON; delay_ms(20); BUZZER_OFF; delay_ms(20); } 
+    }
+    wrong_attempts = 0; 
+    ready_beep();
+    return STATE_IDLE; 
+}
+
+
+// ==========================================
+// 2. CONTROL UNIT (The State Manager)
+// This applies entry-actions whenever a state actually changes.
+// ==========================================
+
+void execute_state_transition(SystemState new_state) {
+    // 1. Perform Hardware Entry Actions for the new state
+    if (new_state == STATE_IDLE) {
+        idx = 0;
+        for(int i=0; i<6; i++) entered[i] = 0;
+        GREEN_OFF;
+        for(int j=0; j<10; j++) servo_pulse_closed(); 
+    } 
+    else if (new_state == STATE_UNLOCKED) {
+        wrong_attempts = 0;
+        inactivity_timer = 0; 
+        GREEN_ON;
+        success_beep();
+        for(int j=0; j<10; j++) servo_pulse_open();
+    }
+    else if (new_state == STATE_TYPING) {
+        inactivity_timer = 0; 
+    }
+    
+    // 2. Officially update the state
+    current_state = new_state;
+}
+
 
 // ==========================================
 // EMERGENCY RESET INTERRUPT
@@ -138,169 +194,50 @@ void go_to_unlocked() {
 #int_ext
 void ext_isr(void) {
    wrong_attempts = 0;
-   go_to_idle();
+   execute_state_transition(STATE_IDLE);
    GREEN_ON; delay_ms(300); GREEN_OFF;
    ready_beep();
 }
 
 // ==========================================
-// MAIN LOOP
+// MAIN LOOP (The Router)
 // ==========================================
 void main() {
-   ANSEL  = 0x00; 
-   ANSELH = 0x00;
-
-   set_tris_b(0x01); 
-   set_tris_c(0x00); 
-   set_tris_d(0xF0); 
-
-   output_b(0x00);
-   output_c(0x00);
-   output_d(0x00); 
+   ANSEL  = 0x00; ANSELH = 0x00;
+   set_tris_b(0x01); set_tris_c(0x00); set_tris_d(0xF0); 
+   output_b(0x00); output_c(0x00); output_d(0x00); 
 
    enable_interrupts(INT_EXT);
    ext_int_edge(L_TO_H);
    enable_interrupts(GLOBAL);
 
    // Boot Sequence
-   go_to_idle();
+   execute_state_transition(STATE_IDLE);
    ready_beep(); 
 
    while (TRUE) {
-      // 1. Read Keypad (Edge Detection)
+      // Input Phase
       char key = scan_matrix();
       int1 key_pressed = FALSE;
-      
-      if (key != 0 && last_key == 0) {
-         key_pressed = TRUE; 
-      }
+      if (key != 0 && last_key == 0) key_pressed = TRUE; 
       last_key = key;
 
-      // 2. FSM Switch Statement
+      SystemState next_state = current_state;
+
+      // Processing Phase (Ask the processing units what to do)
       switch (current_state) {
-         
-         // ------------------------------------
-         // STATE 1: IDLE (Asleep, waiting for first key)
-         // ------------------------------------
-         case STATE_IDLE:
-            if (key_pressed) {
-               if (key >= '0' && key <= '9') {
-                  current_state = STATE_TYPING;
-                  inactivity_timer = 0;   // Start the 5-second typing clock
-                  entered[idx++] = key;   // Save first digit
-                  play_key_tick();
-               }
-            }
-            break;
-
-         // ------------------------------------
-         // STATE 2: TYPING (Active input)
-         // ------------------------------------
-         case STATE_TYPING:
-            inactivity_timer += 10; 
-            if (inactivity_timer >= 5000) {  // 5 seconds passed!
-               error_beep();
-               go_to_idle();
-               break;
-            }
-            
-            if (key_pressed) {
-               inactivity_timer = 0; // Reset timer on any key press
-
-               if (key >= '0' && key <= '9') {
-                  if (idx < PASS_LEN) {
-                     entered[idx++] = key;
-                     play_key_tick();
-                  } else {
-                     RED_ON;
-                     error_beep(); 
-                     RED_OFF;
-                  }
-               }
-               else if (key == '-') { // BACKSPACE
-                  if (idx > 0) {
-                     idx--;
-                     entered[idx] = 0;
-                     play_delete_tick();
-                     if (idx == 0) go_to_idle(); 
-                  } else {
-                     go_to_idle();
-                  }
-               }
-               else if (key == '%') { // ABORT / CANCEL
-                  error_beep();
-                  go_to_idle();
-               }
-               else if (key == '=') { // SUBMIT PASSWORD
-                  int8 match = 1;
-                  if (idx == PASS_LEN) {
-                     for (int8 i = 0; i < PASS_LEN; i++) {
-                        if (entered[i] != PASSWORD[i]) match = 0;
-                     }
-                  } else match = 0; 
-                  
-                  if (match) {
-                     go_to_unlocked();
-                  } else {
-                     wrong_attempts++;
-                     RED_ON; error_beep(); delay_ms(1000); RED_OFF;
-                     
-                     if (wrong_attempts >= MAX_WRONG) {
-                        current_state = STATE_ALARM;
-                     } else {
-                        go_to_idle();
-                     }
-                  }
-               }
-            }
-            break;
-
-         // ------------------------------------
-         // STATE 3: UNLOCKED (Safe is Open)
-         // ------------------------------------
-         case STATE_UNLOCKED:
-            inactivity_timer += 10; 
-            
-            if (inactivity_timer == 12000) { // Warning chirp at 12 seconds
-               play_reminder_chirp();
-            }
-            
-            if (inactivity_timer >= 15000) { // Auto-Lock at 15 seconds
-               go_to_idle();
-               ready_beep();
-               break; 
-            }
-            
-            if (key_pressed) {
-               if (key == '*') {
-                  inactivity_timer = 0; // EXTEND TIME
-                  success_beep(); 
-               } 
-               else if (key == '%') {
-                  go_to_idle();         // MANUAL CLOSE
-                  ready_beep();
-               }
-               else {
-                  error_beep();         // Invalid input
-               }
-            }
-            break;
-
-         // ------------------------------------
-         // STATE 4: ALARM (Lockdown)
-         // ------------------------------------
-         case STATE_ALARM:
-            for(int i = 0; i < 15; i++) { 
-               RED_ON; for(int j=0; j<20; j++) { BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(10); } 
-               RED_OFF; for(int j=0; j<15; j++) { BUZZER_ON; delay_ms(20); BUZZER_OFF; delay_ms(20); } 
-            }
-            wrong_attempts = 0; 
-            ready_beep();
-            go_to_idle(); 
-            break;
-            
+         case STATE_IDLE:     next_state = process_idle(key, key_pressed); break;
+         case STATE_TYPING:   next_state = process_typing(key, key_pressed); break;
+         case STATE_UNLOCKED: next_state = process_unlocked(key, key_pressed); break;
+         case STATE_ALARM:    next_state = process_alarm(); break;
       }
       
-      delay_ms(10); // 10ms Heartbeat
+      // Control Phase (If the processing unit requested a new state, execute it!)
+      if (next_state != current_state) {
+         execute_state_transition(next_state);
+      }
+      
+      // Heartbeat
+      delay_ms(10); 
    }
 }
