@@ -71,6 +71,7 @@ char  last_key = 0;
 int1  reminder_sent = 0;
 
 // ==================== HIGH-LEVEL FUNCTIONS ====================
+// Logic Layer
 int1 password_match() {
    if (idx != PASS_LEN) return 0;
    for (int8 i = 0; i < PASS_LEN; i++) {
@@ -82,7 +83,24 @@ int1 password_match() {
 void update_inactivity_timer() {
    inactivity_timer += 10;
 }
+void check_typing_timeout() {
+   if (inactivity_timer >= 5000) {
+      do_action(ACTION_ERROR_BEEP);
+      go_to_idle();
+   }
+}
 
+void check_unlocked_timeout() {
+   if (inactivity_timer >= 15000) {
+      go_to_idle();
+      do_action(ACTION_READY_BEEP);
+   }
+   else if (inactivity_timer >= 12000 && !reminder_sent) {
+      do_action(ACTION_REMINDER_CHIRP);
+      reminder_sent = 1;
+   }
+}
+//Application layer
 void go_to_idle() {
    current_state = STATE_IDLE;
    idx = 0;
@@ -102,23 +120,6 @@ void go_to_unlocked() {
    for(int j=0; j<10; j++) do_action(ACTION_SERVO_OPEN);
 }
 
-void check_typing_timeout() {
-   if (inactivity_timer >= 5000) {
-      do_action(ACTION_ERROR_BEEP);
-      go_to_idle();
-   }
-}
-
-void check_unlocked_timeout() {
-   if (inactivity_timer >= 15000) {
-      go_to_idle();
-      do_action(ACTION_READY_BEEP);
-   }
-   else if (inactivity_timer >= 12000 && !reminder_sent) {
-      do_action(ACTION_REMINDER_CHIRP);
-      reminder_sent = 1;
-   }
-}
 
 void process_key_in_typing(char key) {
    if (key >= '0' && key <= '9') {
