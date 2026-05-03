@@ -1,0 +1,113 @@
+#include <16F887.h>
+#fuses HS,NOWDT,NOPROTECT,NOLVP
+#use delay(clock=20000000)
+#use fast_io(B)
+#use fast_io(C)
+#use fast_io(D)
+
+#byte ANSEL  = 0x188
+#byte ANSELH = 0x189
+
+#define PASS_LEN  4
+#define MAX_WRONG 3
+const char PASSWORD[] = "1234";
+
+#define GREEN_ON     output_high(PIN_B1)
+#define GREEN_OFF    output_low(PIN_B1)
+#define RED_ON       output_high(PIN_B2)
+#define RED_OFF      output_low(PIN_B2)
+#define BUZZER_ON    output_high(PIN_C1)
+#define BUZZER_OFF   output_low(PIN_C1)
+#define SERVO_HIGH   output_high(PIN_C2)
+#define SERVO_LOW    output_low(PIN_C2)
+
+// ==================== ONE BIG HARDWARE ACTION ====================
+void do_action(char act) { ... }   // (same as before)
+
+// ==================== HIGHER-LEVEL ABSTRACT FUNCTIONS ====================
+void update_inactivity_timer() {
+   inactivity_timer += 10;
+}
+
+void check_typing_timeout() {
+   if (inactivity_timer >= 5000) {
+      do_action('E');
+      go_to_idle();
+   }
+}
+
+void check_unlocked_timeout() {
+   if (inactivity_timer >= 15000) {
+      go_to_idle();
+      do_action('R');
+   }
+   else if (inactivity_timer >= 12000 && !reminder_sent) {
+      do_action('M');
+      reminder_sent = 1;
+   }
+}
+
+void process_key_in_typing(char key) {
+   if (key >= '0' && key <= '9') {
+      if (idx < PASS_LEN) { entered[idx++] = key; do_action('K'); }
+      else { RED_ON; do_action('E'); RED_OFF; }
+   }
+   else if (key == '-') { ... }      // keep your original logic
+   else if (key == '%') { do_action('E'); go_to_idle(); }
+   else if (key == '=') { ... }      // password check
+}
+
+void process_key_in_unlocked(char key) {
+   if (key == '*') { inactivity_timer = 0; do_action('S'); }
+   else if (key == '%') { go_to_idle(); do_action('R'); }
+   else do_action('E');
+}
+
+// ==================== MAIN LOOP (very clean now) ====================
+void main() {
+   ... // setup
+
+   go_to_idle();
+   do_action('R');
+
+   while(TRUE) {
+      char key = scan_matrix();
+      int1 key_pressed = (key != 0 && last_key == 0);
+      last_key = key;
+
+      switch(current_state) {
+
+         case STATE_IDLE:
+            if (key_pressed && key >= '0' && key <= '9') {
+               current_state = STATE_TYPING;
+               inactivity_timer = 0;
+               entered[idx++] = key;
+               do_action('K');
+            }
+            break;
+
+         case STATE_TYPING:
+            update_inactivity_timer();
+            check_typing_timeout();
+
+            if (key_pressed) {
+               inactivity_timer = 0;
+               process_key_in_typing(key);
+            }
+            break;
+
+         case STATE_UNLOCKED:
+            update_inactivity_timer();
+            check_unlocked_timeout();
+
+            if (key_pressed) process_key_in_unlocked(key);
+            break;
+
+         case STATE_ALARM:
+            // non-blocking version or keep as you like
+            ...
+            break;
+      }
+      delay_ms(10);
+   }
+}

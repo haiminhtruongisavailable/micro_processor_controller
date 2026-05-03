@@ -1,0 +1,246 @@
+#include <16F887.h>
+#fuses HS,NOWDT,NOPROTECT,NOLVP
+#use delay(clock=20000000)
+#use fast_io(B)
+#use fast_io(C)
+#use fast_io(D)
+
+#byte ANSEL  = 0x188
+#byte ANSELH = 0x189
+
+#define PASS_LEN  4
+#define MAX_WRONG 3
+const char PASSWORD[] = "1234";
+
+// ==================== HARDWARE MACROS ====================
+#define GREEN_ON     output_high(PIN_B1)
+#define GREEN_OFF    output_low(PIN_B1)
+#define RED_ON       output_high(PIN_B2)
+#define RED_OFF      output_low(PIN_B2)
+#define BUZZER_ON    output_high(PIN_C1)
+#define BUZZER_OFF   output_low(PIN_C1)
+#define SERVO_HIGH   output_high(PIN_C2)
+#define SERVO_LOW    output_low(PIN_C2)
+
+// ==================== FSM ====================
+typedef enum {
+    STATE_IDLE,
+    STATE_TYPING,
+    STATE_UNLOCKED,
+    STATE_ALARM
+} SystemState;
+
+SystemState current_state = STATE_IDLE;
+
+int8  idx = 0;
+char  entered[6];
+int8  wrong_attempts = 0;
+int16 inactivity_timer = 0;
+char  last_key = 0;
+
+// New variables for fixes
+int1  reminder_sent = 0;
+int8  alarm_cycle   = 0;     // makes alarm non-blocking
+
+// ==================== HARDWARE FUNCTIONS ====================
+void servo_pulse_open()  { SERVO_HIGH; delay_us(2050); SERVO_LOW; delay_ms(18); }
+void servo_pulse_closed(){ SERVO_HIGH; delay_us(1496); delay_cycles(11); SERVO_LOW; delay_ms(18); }
+
+void success_beep()     { BUZZER_ON; delay_ms(40); BUZZER_OFF; delay_ms(40);
+                          BUZZER_ON; delay_ms(40); BUZZER_OFF; }
+void error_beep()       { BUZZER_ON; delay_ms(400); BUZZER_OFF; delay_ms(200);
+                          BUZZER_ON; delay_ms(400); BUZZER_OFF; }
+void ready_beep()       { BUZZER_ON; delay_ms(30); BUZZER_OFF; delay_ms(50);
+                          BUZZER_ON; delay_ms(30); BUZZER_OFF; }
+void play_key_tick()    { BUZZER_ON; delay_ms(5);  BUZZER_OFF; }
+void play_delete_tick() { BUZZER_ON; delay_ms(15); BUZZER_OFF; }
+void play_reminder_chirp() { BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(20);
+                             BUZZER_ON; delay_ms(10); BUZZER_OFF; }
+void play_alarm_chirp() { 
+   for(int j = 0; j < 6; j++) {
+      BUZZER_ON; delay_ms(80); BUZZER_OFF; delay_ms(40);
+   }
+}
+
+// ==================== STATE HELPERS ====================
+void clear_data() {
+   idx = 0;
+   for(int i=0; i<6; i++) entered[i] = 0;
+}
+
+void go_to_idle() {
+   current_state = STATE_IDLE;
+   clear_data();
+   GREEN_OFF;
+   for(int j=0; j<10; j++) servo_pulse_closed();
+   reminder_sent = 0;          // reset reminder flag
+}
+
+void go_to_unlocked() {
+   current_state = STATE_UNLOCKED;
+   wrong_attempts = 0;
+   inactivity_timer = 0;
+   reminder_sent = 0;
+   GREEN_ON;
+   success_beep();
+   for(int j=0; j<10; j++) servo_pulse_open();
+}
+
+// ==================== EMERGENCY RESET ====================
+#int_ext
+void ext_isr(void) {
+   wrong_attempts = 0;
+   go_to_idle();
+   GREEN_ON; delay_ms(300); GREEN_OFF;   // kept short flash
+   ready_beep();
+}
+
+// ==================== KEYPAD ====================
+char scan_matrix() {
+   char k = 0;
+   output_high(PIN_D0); delay_us(20);
+   if(input(PIN_D4)) k = '7'; else if(input(PIN_D5)) k = '8'; else if(input(PIN_D6)) k = '9'; else if(input(PIN_D7)) k = '/';
+   output_low(PIN_D0); if(k) return k;
+
+   output_high(PIN_D1); delay_us(20);
+   if(input(PIN_D4)) k = '4'; else if(input(PIN_D5)) k = '5'; else if(input(PIN_D6)) k = '6'; else if(input(PIN_D7)) k = '*';
+   output_low(PIN_D1); if(k) return k;
+
+   output_high(PIN_D2); delay_us(20);
+   if(input(PIN_D4)) k = '1'; else if(input(PIN_D5)) k = '2'; else if(input(PIN_D6)) k = '3'; else if(input(PIN_D7)) k = '-';
+   output_low(PIN_D2); if(k) return k;
+
+   output_high(PIN_D3); delay_us(20);
+   if(input(PIN_D4)) k = '%'; else if(input(PIN_D5)) k = '0'; else if(input(PIN_D6)) k = '='; else if(input(PIN_D7)) k = '+';
+   output_low(PIN_D3);
+   return k;
+}
+
+// ==================== MAIN ====================
+void main() {
+   ANSEL = 0x00; ANSELH = 0x00;
+   set_tris_b(0x01); set_tris_c(0x00); set_tris_d(0xF0);
+   output_b(0x00); output_c(0x00); output_d(0x00);
+
+   enable_interrupts(INT_EXT);
+   ext_int_edge(L_TO_H);
+   enable_interrupts(GLOBAL);
+
+   go_to_idle();
+   ready_beep();
+
+   while (TRUE) {
+      char key = scan_matrix();
+      int1 key_pressed = (key != 0 && last_key == 0);
+      last_key = key;
+
+      switch (current_state) {
+
+         case STATE_IDLE:
+            if (key_pressed && key >= '0' && key <= '9') {
+               current_state = STATE_TYPING;
+               inactivity_timer = 0;
+               entered[idx++] = key;
+               play_key_tick();
+            }
+            break;
+
+         case STATE_TYPING:
+            inactivity_timer += 10;
+            if (inactivity_timer >= 5000) {
+               error_beep();
+               go_to_idle();
+               break;
+            }
+
+            if (key_pressed) {
+               inactivity_timer = 0;
+               if (key >= '0' && key <= '9') {
+                  if (idx < PASS_LEN) {
+                     entered[idx++] = key;
+                     play_key_tick();
+                  } else {
+                     RED_ON; error_beep(); RED_OFF;
+                  }
+               }
+               else if (key == '-') {
+                  if (idx > 0) {
+                     idx--;
+                     entered[idx] = 0;
+                     play_delete_tick();
+                     if (idx == 0) go_to_idle();
+                  } else go_to_idle();
+               }
+               else if (key == '%') {
+                  error_beep();
+                  go_to_idle();
+               }
+               else if (key == '=') {
+                  int8 match = (idx == PASS_LEN);
+                  if (match) {
+                     for (int8 i = 0; i < PASS_LEN; i++) {
+                        if (entered[i] != PASSWORD[i]) match = 0;
+                     }
+                  }
+                  if (match) {
+                     go_to_unlocked();
+                  } else {
+                     wrong_attempts++;
+                     RED_ON; error_beep(); delay_ms(1000); RED_OFF;
+                     if (wrong_attempts >= MAX_WRONG) {
+                        current_state = STATE_ALARM;
+                        alarm_cycle = 0;               // start alarm
+                     } else go_to_idle();
+                  }
+               }
+            }
+            break;
+
+         case STATE_UNLOCKED:
+            inactivity_timer += 10;
+
+            // === Fixed reminder chirp (reliable) ===
+            if (inactivity_timer >= 12000 && !reminder_sent) {
+               play_reminder_chirp();
+               reminder_sent = 1;
+            }
+
+            if (inactivity_timer >= 15000) {
+               go_to_idle();
+               ready_beep();
+               break;
+            }
+
+            if (key_pressed) {
+               if (key == '*') {
+                  inactivity_timer = 0;
+                  success_beep();
+               }
+               else if (key == '%') {
+                  go_to_idle();
+                  ready_beep();
+               }
+               else {
+                  error_beep();
+               }
+            }
+            break;
+
+         case STATE_ALARM:
+            // === Fixed: non-blocking alarm ===
+            if (alarm_cycle < 15) {
+               RED_ON;  play_alarm_chirp();
+               RED_OFF; play_alarm_chirp();
+               alarm_cycle++;
+            } else {
+               alarm_cycle = 0;
+               wrong_attempts = 0;
+               ready_beep();
+               go_to_idle();
+            }
+            break;
+      }
+
+      delay_ms(10);
+   }
+}

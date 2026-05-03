@@ -1,0 +1,235 @@
+#include <16F887.h>
+
+#fuses HS,NOWDT,NOPROTECT,NOLVP
+#use delay(clock=20000000)
+
+#use fast_io(B)
+#use fast_io(C)
+#use fast_io(D)
+
+#byte ANSEL  = 0x188
+#byte ANSELH = 0x189
+
+#define PASS_LEN     4
+#define MAX_WRONG    3
+
+const char PASSWORD[] = "1234";
+
+#define GREEN_ON     output_high(PIN_B1)
+#define GREEN_OFF    output_low(PIN_B1)
+#define RED_ON       output_high(PIN_B2)
+#define RED_OFF      output_low(PIN_B2)
+#define BUZZER_ON    output_high(PIN_C1) 
+#define BUZZER_OFF   output_low(PIN_C1)
+#define SERVO_HIGH   output_high(PIN_C2) 
+#define SERVO_LOW    output_low(PIN_C2)
+
+// ==========================================
+// FSM: DEFINE THE SYSTEM STATES
+// ==========================================
+typedef enum {
+    STATE_LOCKED,
+    STATE_UNLOCKED,
+    STATE_ALARM
+} SystemState;
+
+// Create our state tracking variable and start in the LOCKED state
+SystemState current_state = STATE_LOCKED;
+
+volatile int8 idx = 0;
+volatile char entered[6]; 
+volatile int8 wrong_attempts = 0;
+
+void servo_pulse_open() {
+   SERVO_HIGH; delay_us(2050); SERVO_LOW; delay_ms(18);
+}
+
+void servo_pulse_closed() {
+   SERVO_HIGH; delay_us(1497); delay_cycles(10); SERVO_LOW; delay_ms(18);
+}
+
+void success_beep() {
+   BUZZER_ON; delay_ms(40); BUZZER_OFF; delay_ms(40);
+   BUZZER_ON; delay_ms(40); BUZZER_OFF;
+}
+
+void error_beep() {
+   BUZZER_ON; delay_ms(400); BUZZER_OFF; delay_ms(200);
+   BUZZER_ON; delay_ms(400); BUZZER_OFF;
+}
+
+void ready_beep() {
+   BUZZER_ON; delay_ms(30); BUZZER_OFF; delay_ms(50);
+   BUZZER_ON; delay_ms(30); BUZZER_OFF;
+}
+
+char scan_matrix() {
+   char k = 0;
+   output_high(PIN_D0); delay_us(20);
+   if(input(PIN_D4)) k = '7'; else if(input(PIN_D5)) k = '8'; else if(input(PIN_D6)) k = '9'; else if(input(PIN_D7)) k = '/';
+   output_low(PIN_D0);
+   if (k) return k;
+
+   output_high(PIN_D1); delay_us(20);
+   if(input(PIN_D4)) k = '4'; else if(input(PIN_D5)) k = '5'; else if(input(PIN_D6)) k = '6'; else if(input(PIN_D7)) k = '*';
+   output_low(PIN_D1);
+   if (k) return k;
+
+   output_high(PIN_D2); delay_us(20);
+   if(input(PIN_D4)) k = '1'; else if(input(PIN_D5)) k = '2'; else if(input(PIN_D6)) k = '3'; else if(input(PIN_D7)) k = '-';
+   output_low(PIN_D2);
+   if (k) return k;
+
+   output_high(PIN_D3); delay_us(20);
+   if(input(PIN_D4)) k = '%'; else if(input(PIN_D5)) k = '0'; else if(input(PIN_D6)) k = '='; else if(input(PIN_D7)) k = '+';
+   output_low(PIN_D3);
+   return k;
+}
+
+char wait_for_key() {
+   char k;
+   int16 beep_timer = 0;
+   
+   while(scan_matrix() != 0) { delay_ms(10); }
+
+   while((k = scan_matrix()) == 0) { 
+      delay_ms(10); 
+      
+      // If we are in the UNLOCKED state, play the reminder beep
+      if (current_state == STATE_UNLOCKED) {
+         beep_timer++;
+         if (beep_timer >= 300) {
+            BUZZER_ON; delay_ms(10); BUZZER_OFF; 
+            beep_timer = 0;
+         }
+      }
+   }
+
+   BUZZER_ON; delay_ms(50); BUZZER_OFF;
+   while(scan_matrix() != 0) { delay_ms(10); }
+
+   return k;
+}
+
+void clear_data() {
+   idx = 0;
+   for(int i=0; i<6; i++) entered[i] = 0;
+}
+
+#int_ext
+void ext_isr(void) {
+   wrong_attempts = 0;
+   clear_data();
+   GREEN_ON; delay_ms(300); GREEN_OFF;
+}
+
+void main() {
+   ANSEL  = 0x00; 
+   ANSELH = 0x00;
+
+   set_tris_b(0x01); 
+   set_tris_c(0x00); 
+   set_tris_d(0xF0); 
+
+   output_b(0x00);
+   output_c(0x00);
+   output_d(0x00); 
+
+   clear_data();
+   wrong_attempts = 0;
+   current_state = STATE_LOCKED; // Initial State
+
+   enable_interrupts(INT_EXT);
+   ext_int_edge(L_TO_H);
+   enable_interrupts(GLOBAL);
+
+   for(int j=0; j<10; j++) servo_pulse_closed();
+   ready_beep(); 
+
+   // ==========================================
+   // FINITE STATE MACHINE LOOP
+   // ==========================================
+   while (TRUE) {
+      char key;
+      
+      switch (current_state) {
+         
+         // ------------------------------------
+         // STATE 1: SAFE IS LOCKED
+         // ------------------------------------
+         case STATE_LOCKED:
+            key = wait_for_key(); // Wait for user input
+            
+            if (key == '%') { 
+               clear_data(); 
+            }
+            else if (key >= '0' && key <= '9') {
+               if (idx < PASS_LEN) entered[idx] = key;
+               idx++; 
+            }
+            else if (key == '=') { 
+               int8 match = 1;
+               if (idx == PASS_LEN) {
+                  for (int8 i = 0; i < PASS_LEN; i++) {
+                     if (entered[i] != PASSWORD[i]) match = 0;
+                  }
+               } else match = 0; 
+               
+               if (match) {
+                  // Password Correct: Transition to UNLOCKED State!
+                  wrong_attempts = 0;
+                  GREEN_ON;
+                  success_beep();
+                  for (int16 i = 0; i < 10; i++) servo_pulse_open(); 
+                  current_state = STATE_UNLOCKED; // <-- STATE CHANGE
+               } else {
+                  // Password Wrong
+                  wrong_attempts++;
+                  RED_ON; error_beep(); delay_ms(1000); RED_OFF;
+                  
+                  if (wrong_attempts >= MAX_WRONG) {
+                     current_state = STATE_ALARM; // <-- STATE CHANGE
+                  }
+               }
+               clear_data(); 
+            }
+            break;
+
+         // ------------------------------------
+         // STATE 2: SAFE IS UNLOCKED
+         // ------------------------------------
+         case STATE_UNLOCKED:
+            key = wait_for_key(); // Wait for user input
+            
+            if (key == '*') {
+               // Lock button pressed: Transition back to LOCKED State!
+               GREEN_OFF;
+               for (int16 i = 0; i < 10; i++) servo_pulse_closed(); 
+               success_beep();
+               ready_beep(); 
+               current_state = STATE_LOCKED; // <-- STATE CHANGE
+            } 
+            else {
+               // Any other key pressed while open is invalid
+               error_beep(); 
+            }
+            break;
+
+         // ------------------------------------
+         // STATE 3: ALARM ACTIVATED
+         // ------------------------------------
+         case STATE_ALARM:
+            // Police siren blocking code
+            for(int i = 0; i < 15; i++) { 
+               RED_ON; for(int j=0; j<20; j++) { BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(10); } 
+               RED_OFF; for(int j=0; j<15; j++) { BUZZER_ON; delay_ms(20); BUZZER_OFF; delay_ms(20); } 
+            }
+            // Once alarm is done, reset system and go back to normal locked state
+            wrong_attempts = 0; 
+            ready_beep();
+            current_state = STATE_LOCKED; // <-- STATE CHANGE
+            break;
+            
+      } // End of Switch
+   } // End of While Loop
+}

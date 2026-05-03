@@ -70,15 +70,6 @@ int16 inactivity_timer = 0;
 char  last_key = 0;
 int1  reminder_sent = 0;
 
-void go_to_idle() {
-   current_state = STATE_IDLE;
-   idx = 0;
-   for(int i=0; i<6; i++) entered[i] = 0;
-   GREEN_OFF;
-   for(int j=0; j<10; j++) do_action(ACTION_SERVO_CLOSE);
-   reminder_sent = 0;
-}
-
 // ==================== HIGH-LEVEL FUNCTIONS ====================
 // Logic Layer
 int1 password_match() {
@@ -110,7 +101,14 @@ void check_unlocked_timeout() {
    }
 }
 //Application layer
-
+void go_to_idle() {
+   current_state = STATE_IDLE;
+   idx = 0;
+   for(int i=0; i<6; i++) entered[i] = 0;
+   GREEN_OFF;
+   for(int j=0; j<10; j++) do_action(ACTION_SERVO_CLOSE);
+   reminder_sent = 0;
+}
 
 void go_to_unlocked() {
    current_state = STATE_UNLOCKED;

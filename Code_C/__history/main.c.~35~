@@ -1,0 +1,184 @@
+#include <16F887.h>
+#fuses HS,NOWDT,NOPROTECT,NOLVP
+#use delay(clock=20000000)
+#use fast_io(B)
+#use fast_io(C)
+#use fast_io(D)
+
+#byte ANSEL = 0x188
+#byte ANSELH = 0x189
+
+#define PASS_LEN 4
+#define MAX_WRONG 3
+const char PASSWORD[] = "1234";
+
+#define GREEN_ON output_high(PIN_B1)
+#define GREEN_OFF output_low(PIN_B1)
+#define RED_ON output_high(PIN_B2)
+#define RED_OFF output_low(PIN_B2)
+#define BUZZER_ON output_high(PIN_C1)
+#define BUZZER_OFF output_low(PIN_C1)
+#define SERVO_HIGH output_high(PIN_C2)
+#define SERVO_LOW output_low(PIN_C2)
+
+// ==================== ONE BIG HARDWARE FUNCTION ====================
+void do_action(char act) {
+   switch(act) {
+      case 'K': BUZZER_ON; delay_ms(5);  BUZZER_OFF; break;           // key tick
+      case 'D': BUZZER_ON; delay_ms(15); BUZZER_OFF; break;           // delete tick
+      case 'S': BUZZER_ON; delay_ms(40); BUZZER_OFF; delay_ms(40);    // success
+                BUZZER_ON; delay_ms(40); BUZZER_OFF; break;
+      case 'E': BUZZER_ON; delay_ms(400); BUZZER_OFF; delay_ms(200);  // error
+                BUZZER_ON; delay_ms(400); BUZZER_OFF; break;
+      case 'R': BUZZER_ON; delay_ms(30); BUZZER_OFF; delay_ms(50);    // ready
+                BUZZER_ON; delay_ms(30); BUZZER_OFF; break;
+      case 'M': BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(20);    // reminder
+                BUZZER_ON; delay_ms(10); BUZZER_OFF; break;
+      case 'A': for(int j=0; j<6; j++) { BUZZER_ON; delay_ms(80); BUZZER_OFF; delay_ms(40); } break; // alarm
+      case 'O': SERVO_HIGH; delay_us(2050); SERVO_LOW; delay_ms(18); break; // servo open
+      case 'C': SERVO_HIGH; delay_us(1496); delay_cycles(11); SERVO_LOW; delay_ms(18); break; // servo close
+   }
+}
+
+// ==================== FSM ====================
+typedef enum { STATE_IDLE, STATE_TYPING, STATE_UNLOCKED, STATE_ALARM } SystemState;
+
+SystemState current_state = STATE_IDLE;
+int8 idx = 0;
+char entered[6];
+int8 wrong_attempts = 0;
+int16 inactivity_timer = 0;
+char last_key = 0;
+
+// ==================== HELPERS ====================
+void clear_data() {
+   idx = 0;
+   for(int i=0; i<6; i++) entered[i] = 0;
+}
+
+void go_to_idle() {
+   current_state = STATE_IDLE;
+   clear_data();
+   GREEN_OFF;
+   for(int j=0; j<10; j++) do_action('C');
+}
+
+void go_to_unlocked() {
+   current_state = STATE_UNLOCKED;
+   wrong_attempts = 0;
+   inactivity_timer = 0;
+   GREEN_ON;
+   do_action('S');
+   for(int j=0; j<10; j++) do_action('O');
+}
+
+// ==================== EMERGENCY RESET ====================
+#int_ext
+void ext_isr(void) {
+   wrong_attempts = 0;
+   go_to_idle();
+   GREEN_ON; delay_ms(300); GREEN_OFF;
+   do_action('R');
+}
+
+// ==================== KEYPAD ====================
+char scan_matrix() {
+   char k = 0;
+   output_high(PIN_D0); delay_us(20);
+   if(input(PIN_D4)) k='7'; else if(input(PIN_D5)) k='8'; else if(input(PIN_D6)) k='9'; else if(input(PIN_D7)) k='/';
+   output_low(PIN_D0); if(k) return k;
+   output_high(PIN_D1); delay_us(20);
+   if(input(PIN_D4)) k='4'; else if(input(PIN_D5)) k='5'; else if(input(PIN_D6)) k='6'; else if(input(PIN_D7)) k='*';
+   output_low(PIN_D1); if(k) return k;
+   output_high(PIN_D2); delay_us(20);
+   if(input(PIN_D4)) k='1'; else if(input(PIN_D5)) k='2'; else if(input(PIN_D6)) k='3'; else if(input(PIN_D7)) k='-';
+   output_low(PIN_D2); if(k) return k;
+   output_high(PIN_D3); delay_us(20);
+   if(input(PIN_D4)) k='%'; else if(input(PIN_D5)) k='0'; else if(input(PIN_D6)) k='='; else if(input(PIN_D7)) k='+';
+   output_low(PIN_D3);
+   return k;
+}
+
+// ==================== MAIN ====================
+void main() {
+   ANSEL = 0x00; ANSELH = 0x00;
+   set_tris_b(0x01); set_tris_c(0x00); set_tris_d(0xF0);
+   output_b(0x00); output_c(0x00); output_d(0x00);
+
+   enable_interrupts(INT_EXT);
+   ext_int_edge(L_TO_H);
+   enable_interrupts(GLOBAL);
+
+   go_to_idle();
+   do_action('R');
+
+   while(TRUE) {
+      char key = scan_matrix();
+      int1 key_pressed = (key != 0 && last_key == 0);
+      last_key = key;
+
+      switch(current_state) {
+
+         case STATE_IDLE:
+            if(key_pressed && key>='0' && key<='9') {
+               current_state = STATE_TYPING;
+               inactivity_timer = 0;
+               entered[idx++] = key;
+               do_action('K');
+            }
+            break;
+
+         case STATE_TYPING:
+            inactivity_timer += 10;
+            if(inactivity_timer >= 5000) { do_action('E'); go_to_idle(); break; }
+
+            if(key_pressed) {
+               inactivity_timer = 0;
+               if(key >= '0' && key <= '9') {
+                  if(idx < PASS_LEN) { entered[idx++] = key; do_action('K'); }
+                  else { RED_ON; do_action('E'); RED_OFF; }
+               }
+               else if(key == '-') {
+                  if(idx > 0) { idx--; entered[idx] = 0; do_action('D'); if(idx==0) go_to_idle(); }
+                  else go_to_idle();
+               }
+               else if(key == '%') { do_action('E'); go_to_idle(); }
+               else if(key == '=') {
+                  int8 match = (idx == PASS_LEN);
+                  if(match) for(int8 i=0; i<PASS_LEN; i++) if(entered[i] != PASSWORD[i]) match=0;
+                  if(match) go_to_unlocked();
+                  else {
+                     wrong_attempts++;
+                     RED_ON; do_action('E'); delay_ms(1000); RED_OFF;
+                     if(wrong_attempts >= MAX_WRONG) current_state = STATE_ALARM;
+                     else go_to_idle();
+                  }
+               }
+            }
+            break;
+
+         case STATE_UNLOCKED:
+            inactivity_timer += 10;
+            if(inactivity_timer == 12000) do_action('M');
+            if(inactivity_timer >= 15000) { go_to_idle(); do_action('R'); break; }
+
+            if(key_pressed) {
+               if(key == '*') { inactivity_timer = 0; do_action('S'); }
+               else if(key == '%') { go_to_idle(); do_action('R'); }
+               else do_action('E');
+            }
+            break;
+
+         case STATE_ALARM:
+            for(int i=0; i<15; i++) {
+               RED_ON;  do_action('A');
+               RED_OFF; do_action('A');
+            }
+            wrong_attempts = 0;
+            do_action('R');
+            go_to_idle();
+            break;
+      }
+      delay_ms(10);
+   }
+}

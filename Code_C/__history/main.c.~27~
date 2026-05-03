@@ -1,0 +1,236 @@
+#include <16F887.h>
+#fuses HS,NOWDT,NOPROTECT,NOLVP
+#use delay(clock=20000000)
+#use fast_io(B)
+#use fast_io(C)
+#use fast_io(D)
+
+#byte ANSEL  = 0x188
+#byte ANSELH = 0x189
+
+#define PASS_LEN 4
+#define MAX_WRONG 3
+const char PASSWORD[] = "1234";
+
+// ==================== HARDWARE MACROS ====================
+#define GREEN_ON     output_high(PIN_B1)
+#define GREEN_OFF    output_low(PIN_B1)
+#define RED_ON       output_high(PIN_B2)
+#define RED_OFF      output_low(PIN_B2)
+#define BUZZER_ON    output_high(PIN_C1)
+#define BUZZER_OFF   output_low(PIN_C1)
+#define SERVO_HIGH   output_high(PIN_C2)
+#define SERVO_LOW    output_low(PIN_C2)
+
+// ==================== FSM TYPES ====================
+typedef enum {
+    STATE_IDLE,
+    STATE_TYPING,
+    STATE_UNLOCKED,
+    STATE_ALARM
+} SystemState;
+
+typedef enum {
+    EVENT_NONE,
+    EVENT_DIGIT,       // 0-9
+    EVENT_BACKSPACE,   // -
+    EVENT_SUBMIT,      // =
+    EVENT_CANCEL,      // %
+    EVENT_EXTEND       // *
+} FSMEvent;
+
+// ==================== GLOBAL STATE ====================
+SystemState current_state = STATE_IDLE;
+volatile int8  idx = 0;
+char           entered[6];
+int8           wrong_attempts = 0;
+int16          inactivity_timer = 0;
+char           last_key = 0;
+
+// ==================== HARDWARE & AUDIO (unchanged) ====================
+void servo_pulse_open()  { SERVO_HIGH; delay_us(2050); SERVO_LOW; delay_ms(18); }
+void servo_pulse_closed(){ SERVO_HIGH; delay_us(1496); delay_cycles(11); SERVO_LOW; delay_ms(18); }
+
+void success_beep()  { BUZZER_ON; delay_ms(40); BUZZER_OFF; delay_ms(40); BUZZER_ON; delay_ms(40); BUZZER_OFF; }
+void error_beep()    { BUZZER_ON; delay_ms(400); BUZZER_OFF; delay_ms(200); BUZZER_ON; delay_ms(400); BUZZER_OFF; }
+void ready_beep()    { BUZZER_ON; delay_ms(30); BUZZER_OFF; delay_ms(50); BUZZER_ON; delay_ms(30); BUZZER_OFF; }
+void play_key_tick() { BUZZER_ON; delay_ms(5); BUZZER_OFF; }
+void play_delete_tick(){ BUZZER_ON; delay_ms(15); BUZZER_OFF; }
+void play_reminder_chirp(){ BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(20); BUZZER_ON; delay_ms(10); BUZZER_OFF; }
+
+// ==================== INPUT DECODER (like a logic block) ====================
+FSMEvent decode_event(char key, int1 key_edge) {
+    if (!key_edge) return EVENT_NONE;
+
+    if (key >= '0' && key <= '9') return EVENT_DIGIT;
+    if (key == '-')               return EVENT_BACKSPACE;
+    if (key == '=')               return EVENT_SUBMIT;
+    if (key == '%')               return EVENT_CANCEL;
+    if (key == '*')               return EVENT_EXTEND;
+    return EVENT_NONE;
+}
+
+// ==================== PASSWORD CHECK (pure function) ====================
+int1 password_match() {
+    if (idx != PASS_LEN) return 0;
+    for (int8 i = 0; i < PASS_LEN; i++) {
+        if (entered[i] != PASSWORD[i]) return 0;
+    }
+    return 1;
+}
+
+// ==================== STATE ENTRY ACTIONS (Moore-style) ====================
+void go_to_idle() {
+    current_state = STATE_IDLE;
+    idx = 0;
+    for (int8 i = 0; i < 6; i++) entered[i] = 0;
+    GREEN_OFF;
+    for (int j = 0; j < 10; j++) servo_pulse_closed();
+}
+
+void go_to_unlocked() {
+    current_state = STATE_UNLOCKED;
+    wrong_attempts = 0;
+    inactivity_timer = 0;
+    GREEN_ON;
+    success_beep();
+    for (int j = 0; j < 10; j++) servo_pulse_open();
+}
+
+void go_to_alarm() {
+    current_state = STATE_ALARM;
+}
+
+// ==================== EMERGENCY RESET ====================
+#int_ext
+void ext_isr(void) {
+    wrong_attempts = 0;
+    go_to_idle();
+    GREEN_ON; delay_ms(300); GREEN_OFF;
+    ready_beep();
+}
+
+// ==================== MAIN ====================
+void main() {
+    ANSEL = 0x00; ANSELH = 0x00;
+    set_tris_b(0x01);
+    set_tris_c(0x00);
+    set_tris_d(0xF0);
+    output_b(0x00); output_c(0x00); output_d(0x00);
+
+    enable_interrupts(INT_EXT);
+    ext_int_edge(L_TO_H);
+    enable_interrupts(GLOBAL);
+
+    go_to_idle();
+    ready_beep();
+
+    while (TRUE) {
+        // -- 1. INPUT SAMPLING (synchronous) --
+        char key = scan_matrix();
+        int1 key_edge = (key != 0 && last_key == 0);
+        last_key = key;
+
+        FSMEvent event = decode_event(key, key_edge);
+
+        // -- 2. TIMER UPDATE (common to all states) --
+        if (current_state == STATE_TYPING || current_state == STATE_UNLOCKED) {
+            inactivity_timer += 10;
+        }
+
+        // -- 3. COMBINATIONAL NEXT-STATE LOGIC (this is the "chip designer" part) --
+        SystemState next_state = current_state;   // default: stay
+
+        switch (current_state) {
+
+            case STATE_IDLE:
+                if (event == EVENT_DIGIT) {
+                    next_state = STATE_TYPING;
+                }
+                break;
+
+            case STATE_TYPING:
+                // timeout is a separate "event"
+                if (inactivity_timer >= 5000) {
+                    next_state = STATE_IDLE;
+                }
+                else if (event == EVENT_DIGIT) {
+                    if (idx < PASS_LEN) {
+                        entered[idx++] = key;
+                        play_key_tick();
+                    }
+                }
+                else if (event == EVENT_BACKSPACE) {
+                    if (idx > 0) {
+                        idx--;
+                        entered[idx] = 0;
+                        play_delete_tick();
+                        if (idx == 0) next_state = STATE_IDLE;
+                    } else {
+                        next_state = STATE_IDLE;
+                    }
+                }
+                else if (event == EVENT_CANCEL) {
+                    next_state = STATE_IDLE;
+                }
+                else if (event == EVENT_SUBMIT) {
+                    if (password_match()) {
+                        next_state = STATE_UNLOCKED;
+                    } else {
+                        wrong_attempts++;
+                        RED_ON; error_beep(); delay_ms(1000); RED_OFF;
+                        if (wrong_attempts >= MAX_WRONG) {
+                            next_state = STATE_ALARM;
+                        } else {
+                            next_state = STATE_IDLE;
+                        }
+                    }
+                }
+                break;
+
+            case STATE_UNLOCKED:
+                if (inactivity_timer >= 15000) {               // auto-lock
+                    next_state = STATE_IDLE;
+                }
+                else if (event == EVENT_EXTEND) {
+                    inactivity_timer = 0;                     // reset timer
+                    success_beep();
+                }
+                else if (event == EVENT_CANCEL) {
+                    next_state = STATE_IDLE;
+                }
+                else if (inactivity_timer == 12000) {         // reminder chirp (still in same state)
+                    play_reminder_chirp();
+                }
+                break;
+
+            case STATE_ALARM:
+                // Alarm runs for ~15 seconds then self-clears (you can make this timer-driven too)
+                for (int i = 0; i < 15; i++) {
+                    RED_ON;
+                    for (int j = 0; j < 20; j++) { BUZZER_ON; delay_ms(10); BUZZER_OFF; delay_ms(10); }
+                    RED_OFF;
+                    for (int j = 0; j < 15; j++) { BUZZER_ON; delay_ms(20); BUZZER_OFF; delay_ms(20); }
+                }
+                wrong_attempts = 0;
+                next_state = STATE_IDLE;
+                break;
+        }
+
+        // -- 4. STATE REGISTER UPDATE + ENTRY ACTIONS --
+        if (next_state != current_state) {
+            current_state = next_state;
+
+            switch (current_state) {
+                case STATE_IDLE:     go_to_idle();     break;
+                case STATE_UNLOCKED: go_to_unlocked(); break;
+                case STATE_ALARM:    go_to_alarm();    break;
+                // STATE_TYPING has no special entry action
+            }
+
+            if (current_state == STATE_IDLE) ready_beep();
+        }
+
+        delay_ms(10);   // 10 ms heartbeat
+    }
+}

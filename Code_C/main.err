@@ -1,0 +1,7 @@
+Compiling C:\Users\DELL\Documents\GitProjects\micro_processor_controller\Code_C\main on 04-May-26 at 00:11
+>>> Warning 216 "C:\Users\DELL\Documents\GitProjects\micro_processor_controller\Code_C\main.c" Line 276(1,2): Interrupts disabled during call to prevent re-entrancy:  (do_action)
+>>> Warning 216 "C:\Users\DELL\Documents\GitProjects\micro_processor_controller\Code_C\main.c" Line 276(1,2): Interrupts disabled during call to prevent re-entrancy:  (go_to_idle)
+>>> Warning 216 "C:\Users\DELL\Documents\GitProjects\micro_processor_controller\Code_C\main.c" Line 276(1,2): Interrupts disabled during call to prevent re-entrancy:  (@delay_ms1)
+      Memory usage:   ROM=11%      RAM=8% - 11%
+      0 Errors,  3 Warnings.
+Build Successful.

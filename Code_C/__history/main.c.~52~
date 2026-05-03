@@ -69,7 +69,6 @@ int8  wrong_attempts = 0;
 int16 inactivity_timer = 0;
 char  last_key = 0;
 int1  reminder_sent = 0;
-
 void go_to_idle() {
    current_state = STATE_IDLE;
    idx = 0;

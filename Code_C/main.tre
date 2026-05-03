@@ -1,0 +1,97 @@
+ÀÄmain
+   ÃÄMAIN  0/189  Ram=5
+   ³  ÃÄ@cinit1  (Inline)  Ram=0
+   ³  ÃÄ@cinit2  (Inline)  Ram=0
+   ³  ÃÄgo_to_idle  0/27  Ram=4
+   ³  ³  ÀÄdo_action  0/131  Ram=3
+   ³  ³     ÃÄ@goto57955  0/13  Ram=0
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_us1  0/15  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³     ÃÄ@delay_us1  0/15  Ram=1
+   ³  ³     ÀÄ@delay_ms1  0/20  Ram=1
+   ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ÀÄ*
+   ³  ÃÄscan_matrix  0/104  Ram=1
+   ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ÀÄ*
+   ³  ÃÄupdate_inactivity_timer  0/5  Ram=0
+   ³  ÃÄcheck_typing_timeout  0/30  Ram=0
+   ³  ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÀÄgo_to_idle  0/27  Ram=4
+   ³  ³     ÀÄ*
+   ³  ÃÄprocess_key_in_typing  0/203  Ram=3
+   ³  ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÃÄgo_to_idle  0/27  Ram=4
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÃÄgo_to_idle  0/27  Ram=4
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÃÄpassword_match  (Inline)  Ram=2
+   ³  ³  ³  ÀÄ@const710  0/9  Ram=0
+   ³  ³  ÃÄgo_to_unlocked  (Inline)  Ram=1
+   ³  ³  ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ³  ³  ÀÄ*
+   ³  ³  ³  ÀÄdo_action  0/131  Ram=3
+   ³  ³  ³     ÀÄ*
+   ³  ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÃÄ@delay_ms1  0/20  Ram=1
+   ³  ³  ÀÄgo_to_idle  0/27  Ram=4
+   ³  ³     ÀÄ*
+   ³  ÃÄupdate_inactivity_timer  0/5  Ram=0
+   ³  ÃÄcheck_unlocked_timeout  0/54  Ram=0
+   ³  ³  ÃÄgo_to_idle  0/27  Ram=4
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÀÄdo_action  0/131  Ram=3
+   ³  ³     ÀÄ*
+   ³  ÃÄprocess_key_in_unlocked  0/49  Ram=1
+   ³  ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÃÄgo_to_idle  0/27  Ram=4
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ³  ÀÄ*
+   ³  ³  ÀÄdo_action  0/131  Ram=3
+   ³  ³     ÀÄ*
+   ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ÀÄ*
+   ³  ÃÄdo_action  0/131  Ram=3
+   ³  ³  ÀÄ*
+   ³  ÃÄgo_to_idle  0/27  Ram=4
+   ³  ³  ÀÄ*
+   ³  ÃÄgo_to_idle  0/27  Ram=4
+   ³  ³  ÀÄ*
+   ³  ÀÄ@delay_ms1  0/20  Ram=1
+   ÀÄext_isr  0/18  Ram=1
+      ÃÄgo_to_idle  0/27  Ram=4
+      ³  ÀÄ*
+      ÃÄ@delay_ms1  0/20  Ram=1
+      ÀÄdo_action  0/131  Ram=3
+         ÀÄ*

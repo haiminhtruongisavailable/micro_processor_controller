@@ -70,17 +70,7 @@ int16 inactivity_timer = 0;
 char  last_key = 0;
 int1  reminder_sent = 0;
 
-void go_to_idle() {
-   current_state = STATE_IDLE;
-   idx = 0;
-   for(int i=0; i<6; i++) entered[i] = 0;
-   GREEN_OFF;
-   for(int j=0; j<10; j++) do_action(ACTION_SERVO_CLOSE);
-   reminder_sent = 0;
-}
-
 // ==================== HIGH-LEVEL FUNCTIONS ====================
-// Logic Layer
 int1 password_match() {
    if (idx != PASS_LEN) return 0;
    for (int8 i = 0; i < PASS_LEN; i++) {
@@ -92,6 +82,26 @@ int1 password_match() {
 void update_inactivity_timer() {
    inactivity_timer += 10;
 }
+
+void go_to_idle() {
+   current_state = STATE_IDLE;
+   idx = 0;
+   for(int i=0; i<6; i++) entered[i] = 0;
+   GREEN_OFF;
+   for(int j=0; j<10; j++) do_action(ACTION_SERVO_CLOSE);
+   reminder_sent = 0;
+}
+
+void go_to_unlocked() {
+   current_state = STATE_UNLOCKED;
+   wrong_attempts = 0;
+   inactivity_timer = 0;
+   reminder_sent = 0;
+   GREEN_ON;
+   do_action(ACTION_SUCCESS_BEEP);
+   for(int j=0; j<10; j++) do_action(ACTION_SERVO_OPEN);
+}
+
 void check_typing_timeout() {
    if (inactivity_timer >= 5000) {
       do_action(ACTION_ERROR_BEEP);
@@ -109,19 +119,6 @@ void check_unlocked_timeout() {
       reminder_sent = 1;
    }
 }
-//Application layer
-
-
-void go_to_unlocked() {
-   current_state = STATE_UNLOCKED;
-   wrong_attempts = 0;
-   inactivity_timer = 0;
-   reminder_sent = 0;
-   GREEN_ON;
-   do_action(ACTION_SUCCESS_BEEP);
-   for(int j=0; j<10; j++) do_action(ACTION_SERVO_OPEN);
-}
-
 
 void process_key_in_typing(char key) {
    if (key >= '0' && key <= '9') {
@@ -132,21 +129,20 @@ void process_key_in_typing(char key) {
          RED_ON; do_action(ACTION_ERROR_BEEP); RED_OFF;
       }
    }
-   else if (key == '*') {
-      // Use '*' as Backspace/Cancel
+   else if (key == '-') {
       if (idx > 0) {
          idx--;
          entered[idx] = 0;
          do_action(ACTION_DELETE_TICK);
          if (idx == 0) go_to_idle();
-      } else {
-         go_to_idle();
-         do_action(ACTION_ERROR_BEEP);
-      }
+      } else go_to_idle();
    }
-   else if (key == '#') {
-      // Use '#' as Enter/Submit
-      if (password_match()) {
+   else if (key == '%') {
+      do_action(ACTION_ERROR_BEEP);
+      go_to_idle();
+   }
+   else if (key == '=') {
+      if (password_match()) {           // ? now using the clean function
          go_to_unlocked();
       } else {
          wrong_attempts++;
@@ -161,47 +157,38 @@ void process_key_in_typing(char key) {
 }
 
 void process_key_in_unlocked(char key) {
-   if (key == '#') {
-      // Keep unlocked timer reset
+   if (key == '*') {
       inactivity_timer = 0;
       do_action(ACTION_SUCCESS_BEEP);
    }
-   else if (key == '*') {
-      // Manual Lock
+   else if (key == '%') {
       go_to_idle();
       do_action(ACTION_READY_BEEP);
    }
    else do_action(ACTION_ERROR_BEEP);
 }
 
-// ==================== KEYPAD SCANNER (UPDATED for 3x4) ====================
+// ==================== KEYPAD & INTERRUPT ====================
 char scan_matrix() {
    char k = 0;
-   
-   // Row 1 (RD0)
    output_high(PIN_D0); delay_us(20);
-   if(input(PIN_D4)) k = '1'; else if(input(PIN_D5)) k = '2'; else if(input(PIN_D6)) k = '3';
+   if(input(PIN_D4)) k = '7'; else if(input(PIN_D5)) k = '8'; else if(input(PIN_D6)) k = '9'; else if(input(PIN_D7)) k = '/';
    output_low(PIN_D0); if(k) return k;
 
-   // Row 2 (RD1)
    output_high(PIN_D1); delay_us(20);
-   if(input(PIN_D4)) k = '4'; else if(input(PIN_D5)) k = '5'; else if(input(PIN_D6)) k = '6';
+   if(input(PIN_D4)) k = '4'; else if(input(PIN_D5)) k = '5'; else if(input(PIN_D6)) k = '6'; else if(input(PIN_D7)) k = '*';
    output_low(PIN_D1); if(k) return k;
 
-   // Row 3 (RD2)
    output_high(PIN_D2); delay_us(20);
-   if(input(PIN_D4)) k = '7'; else if(input(PIN_D5)) k = '8'; else if(input(PIN_D6)) k = '9';
+   if(input(PIN_D4)) k = '1'; else if(input(PIN_D5)) k = '2'; else if(input(PIN_D6)) k = '3'; else if(input(PIN_D7)) k = '-';
    output_low(PIN_D2); if(k) return k;
 
-   // Row 4 (RD3)
    output_high(PIN_D3); delay_us(20);
-   if(input(PIN_D4)) k = '*'; else if(input(PIN_D5)) k = '0'; else if(input(PIN_D6)) k = '#';
+   if(input(PIN_D4)) k = '%'; else if(input(PIN_D5)) k = '0'; else if(input(PIN_D6)) k = '='; else if(input(PIN_D7)) k = '+';
    output_low(PIN_D3);
-   
    return k;
-}
+}   // (unchanged - your original function)
 
-// ==================== EMERGENCY RESET ====================
 #int_ext
 void ext_isr(void) {
    wrong_attempts = 0;
@@ -212,13 +199,9 @@ void ext_isr(void) {
 
 // ==================== MAIN ====================
 void main() {
+   // ... (your setup code remains the same)
    ANSEL = 0x00; ANSELH = 0x00;
-   
-   set_tris_b(0x01); 
-   set_tris_c(0x00); 
-   // TRISD: RD4, RD5, RD6 as inputs (columns), RD0-RD3 as outputs (rows)
-   set_tris_d(0x70); 
-   
+   set_tris_b(0x01); set_tris_c(0x00); set_tris_d(0xF0);
    output_b(0x00); output_c(0x00); output_d(0x00);
 
    enable_interrupts(INT_EXT);
@@ -264,6 +247,7 @@ void main() {
                RED_OFF; do_action(ACTION_ALARM_CHIRP);
             }
             wrong_attempts = 0;
+            do_action(ACTION_READY_BEEP);
             go_to_idle();
             break;
 
